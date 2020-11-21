@@ -1,0 +1,27 @@
+Algorithm: AGING
+Number of frames: 2
+Total memory accesses: 515683
+Total page faults: 118444
+Total writes to disk: 34948
+
+Algorithm: AGING
+Number of frames: 2
+Total memory accesses: 515683
+Total page faults: 118518
+Total writes to disk: 35016
+
+
+
+GZIP!
+
+Algorithm: AGING
+Number of frames: 2
+Total memory accesses: 481044
+Total page faults: 40495
+Total writes to disk: 40108
+
+Algorithm: AGING
+Number of frames: 2
+Total memory accesses: 481044
+Total page faults: 40491
+Total writes to disk: 40105

@@ -1,0 +1,48 @@
+This solution is deadlock and starvation free.
+
+There exists no circular dependencies for a deadlock 
+to occur. If you look at the ordering of 
+the downs and ups, there is no circular dependencies. Additionally,
+before every down, no process holds a semaphore. For example,
+every process does an up(mutex) before a down to ensure 
+they do not go to sleep and hold a semaphore. All tenants are 
+able to concurrently view the 
+apartment. This is the whole point of the assignment.
+
+Tenants wait for an agent and agents
+wait for a tenant before the can view the apartment.
+This is done through the agent_arrived and
+tenant_arrived semaphores. When an agent arrive, 
+they do an up on the agent_arrived semaphore and 
+a down on the tenant_arrived semaphore. A tenant 
+will do a up on the tenant_arrived if it is the first
+tenant. This is to make sure that multiple tenants 
+do not uneccesarily increase the tenant arrived semaphore. 
+Since one tenant being present is sufficient, only 
+the first tenant that arrives indicates this. Then,
+all tenants do a down on the agent_arrived semaphore.
+When a tenant is woken up from this, it awake the 
+agent_arrived semaphore.
+
+Only 10 tenants can be assigned to a single 
+agent. This invariant is ensured 
+with the counter current_agent_tenants.
+When this value is greater or equal to 10,
+a tenant blocks and waits for the next agent 
+to come and awake them. They will wake up when the 
+next agent calls an up on the waiting_for_agent semaphore.
+
+Only one agent can enter the apartment at a time.
+This is ensure by the agent_apt_lock semaphore. 
+When an agent leaves the apartment, they do an 
+up on this semaphore which wakes the waiting agent
+up. They then are able to free the waiting 
+agents.
+
+The tenants in the apartment are in a counter variable
+tenants_in_apt. When this is decremented to 0,
+that tenant signals the agent to leave. This ensures 
+that the agent only leaves when the tenants are gone.
+
+No starvation occurs because all of these invariants specified
+in the description are met. 

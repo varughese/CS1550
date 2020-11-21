@@ -1,0 +1,5 @@
+Algorithm: AGING
+Number of frames: 16
+Total memory accesses: 515683
+Total page faults: 6035
+Total writes to disk: 1967

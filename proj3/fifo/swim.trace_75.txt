@@ -1,0 +1,5 @@
+Algorithm: FIFO
+Number of frames: 75
+Total memory accesses: 303193
+Total page faults: 157
+Total writes to disk: 55

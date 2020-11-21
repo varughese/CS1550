@@ -1,0 +1,5 @@
+Algorithm: OPT
+Number of frames: 64
+Total memory accesses: 13
+Total page faults: 6
+Total writes to disk: 0

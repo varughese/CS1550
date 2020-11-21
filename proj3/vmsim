@@ -1,0 +1,318 @@
+#!/usr/bin/python3
+import argparse
+
+# Parsing arguments. Python makes this very simple
+parser = argparse.ArgumentParser(description='Virtual Memory Simulator')
+parser.add_argument('-n', required=True, type=int, help='Number of Frames')
+parser.add_argument('-a', type=str, required=True,
+                          choices=['opt', 'fifo', 'aging'],
+                          help='Page Replacement Algorithm')
+parser.add_argument('-r', type=int, required=False, help='Refresh Amount')
+parser.add_argument('filename', help='Trace file', type=str)
+
+args = parser.parse_args()
+
+# If we are aging and user did not specify refresh rate, do not continue
+if args.a == 'aging' and not args.r:
+	print("Refresh [-r] must be specified with aging argument.")
+	exit(1)
+
+# 4KB Page Size means 12 bits will determine (2^20 = 4KB)
+PAGE_SIZE_BIT_LENGTH = 12
+
+# 8 bit counter gets initialized to 128 because MSB is 1
+AGING_COUNTER_START_VALUE = 0b10000000
+
+# This "interface" (Python does not have real Java interfaces)
+# is used for each algorithm type
+class PageReplacementAlgorithmInterface:
+	def find_frame(self, frames, mem_access):
+		raise NotImplementedError()
+
+	def attempt_refresh(self, frames, mem_access):
+		return None
+	
+	def on_memory_access(self, frames, frame_no, mem_access):
+		raise NotImplementedError()
+
+# The Aging Replacement Algorithm evicts the page with the lowest
+# counter
+class AgingReplacementAlgorithm(PageReplacementAlgorithmInterface):
+	def __init__(self, refresh_rate):
+		self.cycles_since_refresh = 0
+		self.refresh_rate = refresh_rate
+		self.first_trace = True
+
+	# refresh by shifting all counter bits and setting bits to false
+	def refresh(self, frames):
+		for page in frames:
+			if page == None:
+				continue
+			page.aging_counter = page.aging_counter >> 1
+			if page.referenced_bit:
+				page.aging_counter |= AGING_COUNTER_START_VALUE
+			page.referenced_bit = False
+
+	# check if we need to refresh
+	def attempt_refresh(self, frames, mem_access):
+		self.cycles_since_refresh += mem_access.cycles
+		if self.first_trace:
+			# only add one to the non-first memory access
+			self.first_trace = False
+		else:
+			# Add one more cycle for this memory access instruction
+			self.cycles_since_refresh += 1
+
+		# if we are over the refresh rate, refresh!
+		if self.cycles_since_refresh >= self.refresh_rate:
+			refresh_times = self.cycles_since_refresh // self.refresh_rate
+			for i in range(refresh_times):
+				self.refresh(frames)
+			self.cycles_since_refresh = self.cycles_since_refresh % self.refresh_rate
+
+	# Find the frame with the lowest counter
+	# Break ties by these rules:
+	# 1. Lowest counter
+	# 2. Clean frame
+	# 3. Lower page address
+	def find_frame(self, frames, mem_access):		
+		# Getting frame index with minimum aging counter
+		min_counter = float('inf')
+		min_index = -1
+		for index, page in enumerate(frames):
+			# If there is a tie, 
+			# prefer to evict clean pages
+			# chosen to be evicted
+			current_counter = page.aging_counter
+			if current_counter == min_counter:
+				if frames[min_index].dirty_bit and not page.dirty_bit:
+					# Choose to evict this page instead because 
+					# it is clean, so we dont have to write to disk
+					min_counter = float('inf')
+				elif frames[min_index].dirty_bit == page.dirty_bit:
+					# If there is a still tie, choose smaller numbered page
+					if page.page_no < frames[min_index].page_no:
+						min_counter = float('inf')
+
+			if current_counter < min_counter:
+				min_counter = current_counter
+				min_index = index
+
+		frames[min_index].aging_counter = AGING_COUNTER_START_VALUE
+		return min_index
+
+	
+	def on_memory_access(self, frames, frame_no, mem_access):
+		pass
+
+
+# The Optimal Page Replacement chooses which frame to evict based on
+# which will be accessed farthest into the future
+class OptimalReplacementAlgorithm(PageReplacementAlgorithmInterface):
+	# trace_map maps page_no to a list of times they are accessed
+	trace_map = {}
+	def __init__(self, traces):
+		# we reverse this list to speed up the operations of removing
+		# removing from the end is O(1) which is faster
+		for i, trace in reversed(list(enumerate(traces))):
+			page_no = trace.page_no
+			if page_no not in self.trace_map:
+				self.trace_map[page_no] = []
+			# add index of this frame to array in the trace_map
+			self.trace_map[page_no].append(i)
+
+	# finds the frame that will be accessed farthest into the future
+	def find_frame(self, frames, mem_access):
+		# simple algorithm to find maximum
+		max_mem_access_time = -1
+		maximum_index = -1
+		page_no = None
+		for index, page in enumerate(frames):
+			# look at it in the map
+			current_frame_accesses = self.trace_map[page.page_no]
+			# if the frame is not going to be accessed, make it infinity
+			if len(current_frame_accesses) == 0:
+				current_frame_accesses.append(float('inf'))
+			
+			# look at the last item in the list (we reversed it in initialization)
+			current_mem_access_time = current_frame_accesses[-1]
+			# choose the smallest one
+			if current_mem_access_time == max_mem_access_time:
+				if frames[maximum_index].dirty_bit and not page.dirty_bit:
+					# If there is a tie, choose this one if it is not dirty
+					# Setting this to negative 1 will force that
+					max_mem_access_time = -1
+				
+			if current_mem_access_time > max_mem_access_time:
+				max_mem_access_time = current_mem_access_time
+				maximum_index = index
+				page_no = page.page_no
+
+		return maximum_index
+
+	# every access remove the current chosen frame
+	def on_memory_access(self, frames, frame_no, mem_access):
+		page_no = frames[frame_no].page_no
+		current_frames_accesses = self.trace_map[page_no]
+		if len(current_frames_accesses) > 0:
+			self.trace_map[page_no].pop()
+
+# The First-In-First-Out algorithm is simple. It evicts the first
+# page that entered the table.
+class FifoReplacementAlgorithm(PageReplacementAlgorithmInterface):
+	# simple queue. low number so importing Python Queue was not
+	# worth complicating logic
+	queue = []
+
+	def find_frame(self, frames, mem_access):
+		# just pick the first one in the queue
+		frame = self.queue.pop(0)
+		return frame
+	
+	def on_memory_access(self, frames, frame_no, mem_access):
+		# add to queue if not there
+		if frame_no not in self.queue:
+			self.queue.append(frame_no)
+
+# A Page Table entry is what is is entered into the table
+class PageTableEntry:
+	def __init__(self, page_no, dirty_bit, referenced_bit):
+		# aging counter is used by aging algorithm to determine how l
+		# long in page table
+		# Start it off at 128 (0b10000000)
+		self.aging_counter = AGING_COUNTER_START_VALUE
+		self.page_no = page_no
+		# Dirty bit is True if it it written over
+		self.dirty_bit = False
+		# Referenced bit is True if it it read after a refresh
+		self.referenced_bit = False
+
+	def __str__(self):
+		return "{} {} r{}d{}".format(self.page_no, self.aging_counter, int(self.referenced_bit), int(self.dirty_bit))
+
+# The Page Table is what does the store and the read
+# It also calls the page replacement algorithm methods
+# based on what is what initialized with. It performs
+# the operations that are common to each algorithm.
+class PageTable:
+	page_frame_table = {}
+	total_memory_accesses = 0
+	total_page_faults = 0
+	total_writes_to_disk = 0
+	new_frames_counter = 0
+
+	def __init__(self, frames, replacement_algorithm):
+		self.frames = [None] * frames
+		self.replacement_algorithm = replacement_algorithm
+	
+	# This uses the replacement algorithm to find which frame to evict
+	# It also deals with counting the statistics and setting certain bits
+	def find_frame(self, mem_access):
+		# Attempt the refresh. This method will handle that logic
+		self.replacement_algorithm.attempt_refresh(self.frames, mem_access)
+		# We are doing a memory access, so increment here
+		self.total_memory_accesses += 1
+		# The current page_no we are looking for is page_no
+		page_no = mem_access.page_no
+
+		# Check if there is a hit by looking into our dictionary which contains
+		# cached frames (page_frame_table is a hashmap, so -> O(1) lookup)
+		if page_no in self.page_frame_table:
+			# Hit
+			# Since it was in the page table and referenced, set the
+			# reference bit to True
+			frame_index = self.page_frame_table[page_no]
+			page = self.frames[frame_index]
+			page.referenced_bit = True
+			return frame_index
+
+		# Page Fault
+		self.total_page_faults += 1
+
+		# Check if there are one of the first couple
+		# memory accesses and the frames array is not full yet
+		if self.new_frames_counter < len(self.frames):
+			# Page Fault, No Eviction
+			frame_index = self.new_frames_counter
+			# Add to frames
+			self.frames[self.new_frames_counter] = PageTableEntry(page_no, False, False)
+			self.new_frames_counter += 1
+			self.page_frame_table[page_no] = frame_index
+			return frame_index
+		
+		# Page Fault, Call Page Replacement Algorithm
+		frame_no = self.replacement_algorithm.find_frame(self.frames, mem_access)
+		# Since we are removing this frame, delete it out of cache
+		del self.page_frame_table[self.frames[frame_no].page_no]
+
+		# Check if dirty in case we need to write
+		if self.frames[frame_no].dirty_bit:
+			# Evict Dirty So Need to Write to Disk
+			self.total_writes_to_disk += 1
+		
+		# Otherwise, Evict Clean
+		self.frames[frame_no] = PageTableEntry(page_no, False, False)
+		self.page_frame_table[page_no] = frame_no
+		return frame_no
+
+	def store(self, mem_access):
+		# Find Page and Set Dirty Bit to True
+		frame_no = self.find_frame(mem_access)
+		self.frames[frame_no].dirty_bit = True
+		self.replacement_algorithm.on_memory_access(self.frames, frame_no, mem_access)
+
+	def load(self, mem_access):
+		frame_no = self.find_frame(mem_access)
+		self.replacement_algorithm.on_memory_access(self.frames, frame_no, mem_access)
+
+# MemoryAccess represents each line of the trace file
+class MemoryAccess:
+	def __init__(self, trace):
+		# trace is a line like "l 0x20000000 2"
+		# parts will be [l, 0x20000000, 2]
+		parts = trace.strip().split()
+		self.op = parts[0].upper()
+		logical_address = int(parts[1], 16)
+		self.page_no = logical_address >> PAGE_SIZE_BIT_LENGTH
+		# Get bottom 12 bits ( & 0xFFF)
+		self.offset = logical_address & ((1<<PAGE_SIZE_BIT_LENGTH)-1) 
+		self.cycles = int(parts[2])
+
+	def __str__(self):
+		return "{} {} {} {}".format(self.op, self.page_no, self.offset, self.cycles)
+
+# Read the .trace file into memory
+traces = []
+with open(args.filename) as file:
+	for line in file:
+		traces.append(MemoryAccess(line))
+
+# Dictionary to map -a argument into specific algorithm
+algs = {
+	"fifo": FifoReplacementAlgorithm(),
+	"opt": OptimalReplacementAlgorithm(traces),
+	"aging": AgingReplacementAlgorithm(args.r)
+}
+
+# Choose algorithm
+page_replacement_algorithm = algs[args.a]
+# Create Page Table
+page_table = PageTable(args.n, page_replacement_algorithm)
+
+# Iterate through memory traces and call respective page table
+# action
+for mem_access in traces:
+	if mem_access.op == "S":
+		page_table.store(mem_access)
+	else:
+		page_table.load(mem_access)
+
+# Self-explanatory print statistics
+def print_statistics(page_table):
+	print("Algorithm: {}".format(args.a.upper()))
+	print("Number of frames: {}".format(args.n))
+	print("Total memory accesses: {}".format(page_table.total_memory_accesses))
+	print("Total page faults: {}".format(page_table.total_page_faults))
+	print("Total writes to disk: {}".format(page_table.total_writes_to_disk))
+
+print_statistics(page_table)
