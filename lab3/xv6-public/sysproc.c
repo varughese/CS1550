@@ -51,9 +51,8 @@ sys_sbrk(void)
   if(argint(0, &n) < 0)
     return -1;
   addr = myproc()->sz;
-  myproc()->sz += n;
-  // if(growproc(n) < 0)
-  //   return -1;
+  if(growproc(n) < 0)
+    return -1;
   return addr;
 }
 
@@ -89,4 +88,22 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+
+int
+sys_setpriority(void)
+{
+  int priority;
+
+  struct proc *curproc = myproc();
+  argint(0, &priority);
+  if(priority < 0 || priority > 200)
+    return -1;
+  int old_priority = curproc->priority;
+  curproc->priority = priority;
+  if(old_priority < priority) {
+    yield();
+  }
+  return 0;
 }
